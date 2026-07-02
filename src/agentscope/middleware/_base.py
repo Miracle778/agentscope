@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """Base middleware class for AgentScope middleware system."""
-from typing import AsyncGenerator, Awaitable, Callable, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Awaitable, Callable, TYPE_CHECKING
 
 from ..tool import ToolBase
+from ..permission import PermissionEvaluation
 
 if TYPE_CHECKING:
     from ..agent import Agent
     from ..model import ChatResponse
+    from ..message import ToolCallBlock
 
 
 class MiddlewareBase:  # pylint: disable=unused-argument
@@ -23,6 +25,10 @@ class MiddlewareBase:  # pylint: disable=unused-argument
 
     **Transformer Pattern Hook** (sequential pipeline):
     - `on_system_prompt`: Transforms the system prompt string
+
+    **Read-only Notification Hook** (no next_handler):
+    - `on_permission_decision`: Observe a permission decision before the
+      agent consumes it. Cannot modify, skip, or re-run the check.
 
     Each hook is optional - only implement the ones you need. The middleware
     system will automatically detect which hooks are implemented at runtime.
@@ -156,6 +162,51 @@ class MiddlewareBase:  # pylint: disable=unused-argument
             f"{type(self).__name__} does not implement on_acting",
         )
         yield  # pylint: disable=unreachable
+
+    async def on_permission_decision(
+        self,
+        agent: "Agent",
+        tool_call: "ToolCallBlock",
+        tool: ToolBase,
+        tool_input: dict,
+        evaluation: PermissionEvaluation,
+    ) -> None:
+        """Observe a permission decision before the agent consumes it.
+
+        Read-only notification hook, invoked after input validation and
+        permission evaluation succeed, but **before** the agent updates
+        tool-call state, emits ASK/DENY/ALLOW events, or calls
+        :meth:`_acting`. This is the only observation point for DENY,
+        ASK, and mode-suppressed decisions (BYPASS silencing a
+        bypass-immune safety ASK, DONT_ASK converting an ASK to DENY) —
+        :meth:`on_acting` only sees already-permitted executions.
+
+        Contract:
+        - **Read-only**: there is no ``next_handler``. Implementations
+          must NOT replace, skip, or re-run the permission check, and
+          must NOT mutate ``evaluation`` or ``tool_input`` in a way that
+          affects the decision.
+        - **Exceptions propagate** (fail-closed): an exception raised
+          here aborts the tool call. Wrap in try/except for best-effort
+          logging.
+
+        Args:
+            agent (`Agent`): The agent instance (provides ``name``,
+                ``state.session_id``, ``state.reply_id``).
+            tool_call (`ToolCallBlock`): The tool call block (provides
+                ``id`` and the raw model-produced input).
+            tool (`ToolBase`): The resolved tool instance.
+            tool_input (`dict`): Schema-parsed and validated input.
+                **May contain sensitive data** (shell commands, file
+                contents, API tokens) — consumers are responsible for
+                redaction / field whitelisting / truncation.
+            evaluation (`PermissionEvaluation`): The structured
+                permission evaluation, including any candidate decision
+                suppressed by the active mode.
+        """
+        raise RuntimeError(
+            f"{type(self).__name__} does not implement on_permission_decision",
+        )
 
     async def on_model_call(
         self,
