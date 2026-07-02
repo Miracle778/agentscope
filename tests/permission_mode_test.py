@@ -1070,3 +1070,54 @@ class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
         assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+
+
+class PermissionEvaluationExploreModeTest(IsolatedAsyncioTestCase):
+    """evaluate_permission for EXPLORE mode (all DIRECT — no transformation)."""
+
+    async def asyncSetUp(self) -> None:
+        self.context = PermissionContext(mode=PermissionMode.EXPLORE)
+        self.engine = PermissionEngine(self.context)
+
+    async def test_read_tool_is_direct_allow(self) -> None:
+        evaluation = await self.engine.evaluate_permission(
+            Read(),
+            {"file_path": "/tmp/file.txt"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+
+    async def test_write_tool_is_direct_deny(self) -> None:
+        evaluation = await self.engine.evaluate_permission(
+            Write(),
+            {"file_path": "/tmp/file.txt"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+
+
+class PermissionEvaluationAcceptEditsModeTest(IsolatedAsyncioTestCase):
+    """evaluate_permission for ACCEPT_EDITS mode (all DIRECT)."""
+
+    async def asyncSetUp(self) -> None:
+        self.context = PermissionContext(mode=PermissionMode.ACCEPT_EDITS)
+        self.engine = PermissionEngine(self.context)
+
+    async def test_deny_rule_is_direct(self) -> None:
+        self.engine.add_rule(
+            PermissionRule(
+                tool_name="Write",
+                rule_content="*.env",
+                behavior=PermissionBehavior.DENY,
+                source="test",
+            ),
+        )
+        evaluation = await self.engine.evaluate_permission(
+            Write(),
+            {"file_path": "/tmp/secret.env"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY

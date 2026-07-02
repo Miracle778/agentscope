@@ -248,7 +248,7 @@ class PermissionEngine:
         self,
         tool: ToolBase,
         tool_input: dict[str, Any],
-    ) -> PermissionDecision:
+    ) -> PermissionEvaluation:
         """Permission check for :attr:`PermissionMode.EXPLORE`.
 
         Read-only mode — modifications are categorically denied. Evaluation
@@ -273,13 +273,14 @@ class PermissionEngine:
                 The tool input data.
 
         Returns:
-            `PermissionDecision`:
-                ALLOW for read-only invocations, DENY otherwise.
+            `PermissionEvaluation`:
+                ALLOW for read-only invocations, DENY otherwise (always
+                ``resolution=DIRECT`` — no mode transformation).
         """
         # step 1: deny rules
         deny = await self._check_deny_rules(tool, tool_input)
         if deny:
-            return deny
+            return self._direct(deny)
 
         # step 2: ask rules
         ask = await self._check_ask_rules(tool, tool_input)
@@ -288,32 +289,36 @@ class PermissionEngine:
                 tool,
                 tool_input,
             )
-            return ask
+            return self._direct(ask)
 
         # step 3: read-only verdict decides everything (ALLOW or DENY)
         if await tool.check_read_only(tool_input):
-            return PermissionDecision(
-                behavior=PermissionBehavior.ALLOW,
-                message=(
-                    f"Permission granted for {tool.name} "
-                    f"(explore mode - read-only invocation)"
+            return self._direct(
+                PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message=(
+                        f"Permission granted for {tool.name} "
+                        f"(explore mode - read-only invocation)"
+                    ),
+                    decision_reason="Explore mode allows read-only operations",
                 ),
-                decision_reason="Explore mode allows read-only operations",
             )
-        return PermissionDecision(
-            behavior=PermissionBehavior.DENY,
-            message=(
-                f"Permission denied for {tool.name} "
-                f"(explore mode is read-only)"
+        return self._direct(
+            PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=(
+                    f"Permission denied for {tool.name} "
+                    f"(explore mode is read-only)"
+                ),
+                decision_reason="Explore mode does not allow modifications",
             ),
-            decision_reason="Explore mode does not allow modifications",
         )
 
     async def _check_accept_edits(
         self,
         tool: ToolBase,
         tool_input: dict[str, Any],
-    ) -> PermissionDecision:
+    ) -> PermissionEvaluation:
         """Permission check for :attr:`PermissionMode.ACCEPT_EDITS`.
 
         Edits within working directories are auto-allowed by each tool's
@@ -338,13 +343,14 @@ class PermissionEngine:
                 The tool input data.
 
         Returns:
-            `PermissionDecision`:
-                The final decision.
+            `PermissionEvaluation`:
+                The final evaluation (always ``resolution=DIRECT`` — no
+                mode transformation).
         """
         # step 1: deny rules
         deny = await self._check_deny_rules(tool, tool_input)
         if deny:
-            return deny
+            return self._direct(deny)
 
         # step 2: ask rules
         ask = await self._check_ask_rules(tool, tool_input)
@@ -353,18 +359,20 @@ class PermissionEngine:
                 tool,
                 tool_input,
             )
-            return ask
+            return self._direct(ask)
 
         # step 3: read-only fast path — ALLOW without invoking the tool
         if await tool.check_read_only(tool_input):
-            return PermissionDecision(
-                behavior=PermissionBehavior.ALLOW,
-                message=(
-                    f"Permission granted for {tool.name} "
-                    f"(accept edits mode - read-only invocation)"
+            return self._direct(
+                PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message=(
+                        f"Permission granted for {tool.name} "
+                        f"(accept edits mode - read-only invocation)"
+                    ),
+                    decision_reason="Accept edits mode allows read-only "
+                    "operations",
                 ),
-                decision_reason="Accept edits mode allows read-only "
-                "operations",
             )
 
         # step 4: tool's own check_permissions (working-directory check
@@ -375,19 +383,19 @@ class PermissionEngine:
             PermissionBehavior.ALLOW,
             PermissionBehavior.DENY,
         ):
-            return tool_decision
+            return self._direct(tool_decision)
         # step 4b: safety ASK is bypass-immune
         if self._is_safety_ask(tool_decision):
             tool_decision.suggested_rules = await self._generate_suggestions(
                 tool,
                 tool_input,
             )
-            return tool_decision
+            return self._direct(tool_decision)
 
         # step 5: allow rules
         allow = await self._check_allow_rules(tool, tool_input)
         if allow:
-            return allow
+            return self._direct(allow)
 
         # step 6: default — ASK the user
         default = PermissionDecision(
@@ -399,7 +407,7 @@ class PermissionEngine:
             tool,
             tool_input,
         )
-        return default
+        return self._direct(default)
 
     async def _check_bypass(
         self,
