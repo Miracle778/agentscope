@@ -187,7 +187,9 @@ class Agent:
             _ for _ in middlewares if _.is_implemented("on_compress_context")
         ]
         self._permission_decision_middlewares = [
-            _ for _ in middlewares if _.is_implemented("on_permission_decision")
+            _
+            for _ in middlewares
+            if _.is_implemented("on_permission_decision")
         ]
 
     # =======================================================================

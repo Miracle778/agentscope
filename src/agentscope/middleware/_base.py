@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Base middleware class for AgentScope middleware system."""
-from typing import Any, AsyncGenerator, Awaitable, Callable, TYPE_CHECKING
+from typing import AsyncGenerator, Awaitable, Callable, TYPE_CHECKING
 
 from ..tool import ToolBase
 from ..permission import PermissionEvaluation

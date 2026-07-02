@@ -1419,7 +1419,12 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
 
         class Recorder(MiddlewareBase):
             async def on_permission_decision(
-                self, agent, tool_call, tool, tool_input, evaluation,
+                self,
+                agent,
+                tool_call,
+                tool,
+                tool_input,
+                evaluation,
             ) -> None:
                 records.append(
                     f"decision:{evaluation.effective_decision.behavior.value}",
@@ -1469,7 +1474,12 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
 
         class Recorder(MiddlewareBase):
             async def on_permission_decision(
-                self, agent, tool_call, tool, tool_input, evaluation,
+                self,
+                agent,
+                tool_call,
+                tool,
+                tool_input,
+                evaluation,
             ) -> None:
                 records.append(evaluation)
 
@@ -1489,7 +1499,8 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
             ],
         )
         events = [
-            e async for e in agent.reply_stream(UserMsg("user", "run rm -rf /"))
+            e
+            async for e in agent.reply_stream(UserMsg("user", "run rm -rf /"))
         ]
 
         assert len(records) == 1
@@ -1541,7 +1552,9 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
                 ChatResponse(content=[TextBlock(text="done")], is_last=True),
             ],
         )
-        events = [e async for e in agent.reply_stream(UserMsg("user", "run ls"))]
+        events = [
+            e async for e in agent.reply_stream(UserMsg("user", "run ls"))
+        ]
         assert rec.acted is True
 
     @unittest.skipIf(
@@ -1551,7 +1564,12 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
     async def test_observer_exception_aborts_tool_call(self) -> None:
         class FailingObserver(MiddlewareBase):
             async def on_permission_decision(
-                self, agent, tool_call, tool, tool_input, evaluation,
+                self,
+                agent,
+                tool_call,
+                tool,
+                tool_input,
+                evaluation,
             ) -> None:
                 raise RuntimeError("observer failed")
 
@@ -1579,7 +1597,9 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
             ],
         )
         with self.assertRaises(RuntimeError):
-            _ = [e async for e in agent.reply_stream(UserMsg("user", "run ls"))]
+            _ = [
+                e async for e in agent.reply_stream(UserMsg("user", "run ls"))
+            ]
 
     @unittest.skipIf(
         sys.platform == "win32",
@@ -1590,7 +1610,12 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
 
         class Recorder(MiddlewareBase):
             async def on_permission_decision(
-                self, agent, tool_call, tool, tool_input, evaluation,
+                self,
+                agent,
+                tool_call,
+                tool,
+                tool_input,
+                evaluation,
             ) -> None:
                 records.append(evaluation)
 
@@ -1613,7 +1638,8 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
             ],
         )
         first_events = [
-            e async for e in agent.reply_stream(UserMsg("user", "run rm -rf /"))
+            e
+            async for e in agent.reply_stream(UserMsg("user", "run rm -rf /"))
         ]
 
         # First reply: safety ASK observed, recorded as ASK (DIRECT).
@@ -1623,8 +1649,7 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
 
         # Locate the RequireUserConfirmEvent and accept its suggested rules.
         confirm_event = next(
-            e for e in first_events
-            if isinstance(e, RequireUserConfirmEvent)
+            e for e in first_events if isinstance(e, RequireUserConfirmEvent)
         )
         confirmed_tool_call = confirm_event.tool_calls[0]
         accepted_rules = list(confirmed_tool_call.suggested_rules or [])
@@ -1632,11 +1657,14 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
         # Second reply: feed the UserConfirmResultEvent accepting the rules.
         agent.model.set_responses(
             [
-                ChatResponse(content=[TextBlock(text="all done")], is_last=True),
+                ChatResponse(
+                    content=[TextBlock(text="all done")], is_last=True
+                ),
             ],
         )
         second_events = [
-            e async for e in agent.reply_stream(
+            e
+            async for e in agent.reply_stream(
                 UserConfirmResultEvent(
                     reply_id=agent.state.reply_id,
                     confirm_results=[
@@ -1652,11 +1680,16 @@ class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
 
         # Second reply recorded the reused authorization as USER_CONFIRMED.
         assert any(
-            r.resolution == PermissionResolution.USER_CONFIRMED for r in records
+            r.resolution == PermissionResolution.USER_CONFIRMED
+            for r in records
         ), f"expected USER_CONFIRMED in {records}"
         user_confirmed = next(
-            r for r in records
+            r
+            for r in records
             if r.resolution == PermissionResolution.USER_CONFIRMED
         )
-        assert user_confirmed.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            user_confirmed.effective_decision.behavior
+            == PermissionBehavior.ALLOW
+        )
         assert user_confirmed.candidate_decision is None

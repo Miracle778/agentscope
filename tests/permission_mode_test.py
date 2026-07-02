@@ -29,8 +29,6 @@ from agentscope.permission import (
     PermissionContext,
     PermissionRule,
     PermissionBehavior,
-    PermissionDecision,
-    PermissionEvaluation,
     PermissionResolution,
     AdditionalWorkingDirectory,
 )
@@ -920,7 +918,9 @@ class PermissionEvaluationDefaultModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )
         assert evaluation.mode == PermissionMode.DEFAULT
 
     async def test_safety_ask_is_direct(self) -> None:
@@ -942,7 +942,9 @@ class PermissionEvaluationDefaultModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        )
 
 
 class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
@@ -959,7 +961,9 @@ class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        )
 
     async def test_safety_ask_suppressed_to_allow(self) -> None:
         # rm -rf / -> bypass-immune safety ASK, suppressed to ALLOW.
@@ -967,8 +971,12 @@ class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
             Bash(),
             {"command": "rm -rf /"},
         )
-        assert evaluation.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
-        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            evaluation.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
+        )
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        )
         assert evaluation.candidate_decision is not None
         assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
         assert evaluation.candidate_decision.bypass_immune is True
@@ -988,8 +996,12 @@ class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
             Bash(),
             {"command": "rm -rf /"},
         )
-        assert evaluation.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
-        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            evaluation.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
+        )
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        )
         assert evaluation.candidate_decision is not None
         assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
         assert evaluation.candidate_decision.bypass_immune is True
@@ -1009,7 +1021,9 @@ class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )
 
 
 class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
@@ -1024,8 +1038,12 @@ class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
             Bash(),
             {"command": "rm -rf /"},
         )
-        assert evaluation.resolution == PermissionResolution.ASK_CONVERTED_TO_DENY
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.resolution == PermissionResolution.ASK_CONVERTED_TO_DENY
+        )
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )
         assert evaluation.candidate_decision is not None
         assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
         assert evaluation.candidate_decision.bypass_immune is True
@@ -1043,8 +1061,12 @@ class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
             Bash(),
             {"command": "rm foo"},
         )
-        assert evaluation.resolution == PermissionResolution.ASK_CONVERTED_TO_DENY
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.resolution == PermissionResolution.ASK_CONVERTED_TO_DENY
+        )
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )
         assert evaluation.candidate_decision is not None
         assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
 
@@ -1055,7 +1077,9 @@ class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        )
 
     @unittest.skipIf(
         sys.platform == "win32",
@@ -1069,7 +1093,9 @@ class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )
 
 
 class PermissionEvaluationExploreModeTest(IsolatedAsyncioTestCase):
@@ -1086,7 +1112,9 @@ class PermissionEvaluationExploreModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        )
 
     async def test_write_tool_is_direct_deny(self) -> None:
         evaluation = await self.engine.evaluate_permission(
@@ -1095,7 +1123,9 @@ class PermissionEvaluationExploreModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )
 
 
 class PermissionEvaluationAcceptEditsModeTest(IsolatedAsyncioTestCase):
@@ -1120,4 +1150,6 @@ class PermissionEvaluationAcceptEditsModeTest(IsolatedAsyncioTestCase):
         )
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
-        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert (
+            evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        )

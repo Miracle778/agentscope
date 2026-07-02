@@ -509,7 +509,6 @@ class PermissionEngine:
             )
         return self._direct(fallback)
 
-
     async def _check_dont_ask(
         self,
         tool: ToolBase,
