@@ -82,11 +82,14 @@ from ..permission import (
     PermissionBehavior,
     PermissionEngine,
     PermissionDecision,
+    PermissionEvaluation,
+    PermissionResolution,
 )
 from ..workspace import Offloader, WorkspaceBase
 
 if TYPE_CHECKING:
     from ..middleware import MiddlewareBase
+    from ..tool import ToolBase
 else:
     MiddlewareBase = Any
 
@@ -182,6 +185,9 @@ class Agent:
         ]
         self._compress_context_middlewares = [
             _ for _ in middlewares if _.is_implemented("on_compress_context")
+        ]
+        self._permission_decision_middlewares = [
+            _ for _ in middlewares if _.is_implemented("on_permission_decision")
         ]
 
     # =======================================================================
@@ -1421,11 +1427,26 @@ class Agent:
                 behavior=PermissionBehavior.ALLOW,
                 message="Already allowed by user confirmation.",
             )
+            evaluation = PermissionEvaluation(
+                mode=self._engine.context.mode,
+                effective_decision=decision,
+                resolution=PermissionResolution.USER_CONFIRMED,
+            )
         else:
-            decision = await self._engine.check_permission(
+            evaluation = await self._engine.evaluate_permission(
                 tool,
                 parsed_input,
             )
+            decision = evaluation.effective_decision
+
+        # Notify read-only permission-decision observers BEFORE consuming
+        # the decision (before state updates, events, or _acting).
+        await self._notify_permission_decision(
+            tool_call=tool_call,
+            tool=tool,
+            tool_input=parsed_input,
+            evaluation=evaluation,
+        )
 
         # ===================================================================
         # Step 3: Handle the permission and execute the tool call if allowed
@@ -1588,6 +1609,28 @@ class Agent:
         raise ValueError(
             f"Invalid permission decision behavior: {decision.behavior}",
         )
+
+    async def _notify_permission_decision(
+        self,
+        tool_call: ToolCallBlock,
+        tool: "ToolBase",
+        tool_input: dict[str, Any],
+        evaluation: PermissionEvaluation,
+    ) -> None:
+        """Notify on_permission_decision observers (read-only, fail-closed).
+
+        Called after permission evaluation and before the decision is
+        consumed. Empty when no observer middleware is attached (zero
+        overhead). Exceptions propagate per the hook contract.
+        """
+        for mw in self._permission_decision_middlewares:
+            await mw.on_permission_decision(
+                agent=self,
+                tool_call=tool_call,
+                tool=tool,
+                tool_input=tool_input,
+                evaluation=evaluation,
+            )
 
     async def _acting(
         self,
