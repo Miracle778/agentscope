@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=abstract-method
 """Unit tests for middleware system."""
+import sys
+import unittest
 from unittest.async_case import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 from typing import Any, AsyncGenerator, Callable, Union
 
 from utils import MockModel
 from pydantic import BaseModel
-from agentscope.event import AgentEvent
+from agentscope.event import (
+    AgentEvent,
+    RequireUserConfirmEvent,
+    UserConfirmResultEvent,
+    ConfirmResult,
+)
 from agentscope.agent import Agent, ContextConfig
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatResponse
@@ -19,11 +26,15 @@ from agentscope.message import (
     Msg,
     ToolCallBlock,
 )
-from agentscope.tool import Toolkit, ToolBase, ToolChunk
+from agentscope.state import AgentState
+from agentscope.tool import Toolkit, ToolBase, ToolChunk, Bash
 from agentscope.permission import (
     PermissionContext,
     PermissionDecision,
     PermissionBehavior,
+    PermissionMode,
+    PermissionRule,
+    PermissionResolution,
 )
 
 
@@ -1293,3 +1304,359 @@ class TestMiddleware(IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         """Clean up test fixtures."""
         self.execution_log.clear()
+
+
+# ---------------------------------------------------------------------------
+# on_permission_decision integration tests
+# ---------------------------------------------------------------------------
+
+
+def _build_agent_with_bash(
+    middlewares: list,
+    mode: PermissionMode = PermissionMode.DEFAULT,
+    deny_rules: list[PermissionRule] | None = None,
+    allow_rules: list[PermissionRule] | None = None,
+    ask_rules: list[PermissionRule] | None = None,
+) -> Agent:
+    """Build an Agent with a Bash tool and a configurable permission mode.
+
+    Uses MockModel; the caller sets responses on the returned agent's
+    model via ``agent.model.set_responses(...)``.
+    """
+    deny_rules = deny_rules or []
+    allow_rules = allow_rules or []
+    ask_rules = ask_rules or []
+    context = PermissionContext(
+        mode=mode,
+        deny_rules={"Bash": deny_rules} if deny_rules else {},
+        allow_rules={"Bash": allow_rules} if allow_rules else {},
+        ask_rules={"Bash": ask_rules} if ask_rules else {},
+    )
+    state = AgentState(permission_context=context)
+    model = MockModel(context_size=10000)
+    agent = Agent(
+        name="test_agent",
+        system_prompt="test prompt",
+        model=model,
+        toolkit=Toolkit(tools=[Bash()]),
+        middlewares=middlewares,
+        state=state,
+    )
+    return agent
+
+
+class PermissionDecisionObserverTest(IsolatedAsyncioTestCase):
+    """on_permission_decision fires once per tool call, before on_acting."""
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_allow_fires_once_before_acting(self) -> None:
+        records: list[str] = []
+
+        class Recorder(MiddlewareBase):
+            async def on_permission_decision(
+                self,
+                agent,
+                tool_call,
+                tool,
+                tool_input,
+                evaluation,
+            ) -> None:
+                records.append(
+                    f"decision:{evaluation.effective_decision.behavior.value}",
+                )
+
+            async def on_acting(
+                self,
+                agent,
+                input_kwargs,
+                next_handler,
+            ):
+                records.append("acting:before")
+                async for item in next_handler():
+                    yield item
+                records.append("acting:after")
+
+        agent = _build_agent_with_bash(
+            middlewares=[Recorder()],
+            mode=PermissionMode.DEFAULT,
+            allow_rules=[
+                PermissionRule(
+                    tool_name="Bash",
+                    rule_content="ls",
+                    behavior=PermissionBehavior.ALLOW,
+                    source="test",
+                ),
+            ],
+        )
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="Bash",
+            input='{"command": "ls"}',
+        )
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[tool_call], is_last=False),
+                ChatResponse(content=[TextBlock(text="done")], is_last=True),
+            ],
+        )
+        events = [
+            e async for e in agent.reply_stream(UserMsg("user", "run ls"))
+        ]
+
+        assert "decision:allow" in records
+        assert records.index("decision:allow") < records.index("acting:before")
+        assert records.count("decision:allow") == 1
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_deny_fires_without_acting(self) -> None:
+        records: list[str] = []
+
+        class Recorder(MiddlewareBase):
+            async def on_permission_decision(
+                self, agent, tool_call, tool, tool_input, evaluation,
+            ) -> None:
+                records.append(
+                    f"decision:{evaluation.effective_decision.behavior.value}",
+                )
+
+            async def on_acting(self, agent, input_kwargs, next_handler):
+                records.append("acting")
+                async for item in next_handler():
+                    yield item
+
+        agent = _build_agent_with_bash(
+            middlewares=[Recorder()],
+            mode=PermissionMode.DEFAULT,
+            deny_rules=[
+                PermissionRule(
+                    tool_name="Bash",
+                    rule_content="*",
+                    behavior=PermissionBehavior.DENY,
+                    source="test",
+                ),
+            ],
+        )
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="Bash",
+            input='{"command": "echo hi"}',
+        )
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[tool_call], is_last=False),
+                ChatResponse(content=[TextBlock(text="done")], is_last=True),
+            ],
+        )
+        events = [
+            e async for e in agent.reply_stream(UserMsg("user", "run echo"))
+        ]
+
+        assert "decision:deny" in records
+        assert "acting" not in records
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_bypass_suppressed_ask_recorded(self) -> None:
+        records: list = []
+
+        class Recorder(MiddlewareBase):
+            async def on_permission_decision(
+                self, agent, tool_call, tool, tool_input, evaluation,
+            ) -> None:
+                records.append(evaluation)
+
+        agent = _build_agent_with_bash(
+            middlewares=[Recorder()],
+            mode=PermissionMode.BYPASS,
+        )
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="Bash",
+            input='{"command": "rm -rf /"}',
+        )
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[tool_call], is_last=False),
+                ChatResponse(content=[TextBlock(text="done")], is_last=True),
+            ],
+        )
+        events = [
+            e async for e in agent.reply_stream(UserMsg("user", "run rm -rf /"))
+        ]
+
+        assert len(records) == 1
+        ev = records[0]
+        assert ev.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert ev.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
+        assert ev.candidate_decision is not None
+        assert ev.candidate_decision.behavior == PermissionBehavior.ASK
+        assert ev.candidate_decision.bypass_immune is True
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_no_observer_no_behavior_change(self) -> None:
+        # An agent with a middleware that does NOT implement
+        # on_permission_decision behaves exactly like one with no
+        # middleware for permission purposes.
+        class PlainActingRecorder(MiddlewareBase):
+            def __init__(self) -> None:
+                self.acted = False
+
+            async def on_acting(self, agent, input_kwargs, next_handler):
+                self.acted = True
+                async for item in next_handler():
+                    yield item
+
+        rec = PlainActingRecorder()
+        agent = _build_agent_with_bash(
+            middlewares=[rec],
+            mode=PermissionMode.DEFAULT,
+            allow_rules=[
+                PermissionRule(
+                    tool_name="Bash",
+                    rule_content="ls",
+                    behavior=PermissionBehavior.ALLOW,
+                    source="test",
+                ),
+            ],
+        )
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="Bash",
+            input='{"command": "ls"}',
+        )
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[tool_call], is_last=False),
+                ChatResponse(content=[TextBlock(text="done")], is_last=True),
+            ],
+        )
+        events = [e async for e in agent.reply_stream(UserMsg("user", "run ls"))]
+        assert rec.acted is True
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_observer_exception_aborts_tool_call(self) -> None:
+        class FailingObserver(MiddlewareBase):
+            async def on_permission_decision(
+                self, agent, tool_call, tool, tool_input, evaluation,
+            ) -> None:
+                raise RuntimeError("observer failed")
+
+        agent = _build_agent_with_bash(
+            middlewares=[FailingObserver()],
+            mode=PermissionMode.DEFAULT,
+            allow_rules=[
+                PermissionRule(
+                    tool_name="Bash",
+                    rule_content="ls",
+                    behavior=PermissionBehavior.ALLOW,
+                    source="test",
+                ),
+            ],
+        )
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="Bash",
+            input='{"command": "ls"}',
+        )
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[tool_call], is_last=False),
+                ChatResponse(content=[TextBlock(text="done")], is_last=True),
+            ],
+        )
+        with self.assertRaises(RuntimeError):
+            _ = [e async for e in agent.reply_stream(UserMsg("user", "run ls"))]
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_user_confirmed_reuse_recorded(self) -> None:
+        records: list = []
+
+        class Recorder(MiddlewareBase):
+            async def on_permission_decision(
+                self, agent, tool_call, tool, tool_input, evaluation,
+            ) -> None:
+                records.append(evaluation)
+
+        # DEFAULT mode. rm -rf / triggers a bypass-immune safety ASK on
+        # the first reply; accepting the suggested rules lets the second
+        # reply reuse authorization (USER_CONFIRMED resolution).
+        agent = _build_agent_with_bash(
+            middlewares=[Recorder()],
+            mode=PermissionMode.DEFAULT,
+        )
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="Bash",
+            input='{"command": "rm -rf /"}',
+        )
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[tool_call], is_last=False),
+                ChatResponse(content=[TextBlock(text="done")], is_last=True),
+            ],
+        )
+        first_events = [
+            e async for e in agent.reply_stream(UserMsg("user", "run rm -rf /"))
+        ]
+
+        # First reply: safety ASK observed, recorded as ASK (DIRECT).
+        assert len(records) == 1
+        assert records[0].effective_decision.behavior == PermissionBehavior.ASK
+        assert records[0].resolution == PermissionResolution.DIRECT
+
+        # Locate the RequireUserConfirmEvent and accept its suggested rules.
+        confirm_event = next(
+            e for e in first_events
+            if isinstance(e, RequireUserConfirmEvent)
+        )
+        confirmed_tool_call = confirm_event.tool_calls[0]
+        accepted_rules = list(confirmed_tool_call.suggested_rules or [])
+
+        # Second reply: feed the UserConfirmResultEvent accepting the rules.
+        agent.model.set_responses(
+            [
+                ChatResponse(content=[TextBlock(text="all done")], is_last=True),
+            ],
+        )
+        second_events = [
+            e async for e in agent.reply_stream(
+                UserConfirmResultEvent(
+                    reply_id=agent.state.reply_id,
+                    confirm_results=[
+                        ConfirmResult(
+                            confirmed=True,
+                            tool_call=confirmed_tool_call,
+                            rules=accepted_rules,
+                        ),
+                    ],
+                ),
+            )
+        ]
+
+        # Second reply recorded the reused authorization as USER_CONFIRMED.
+        assert any(
+            r.resolution == PermissionResolution.USER_CONFIRMED for r in records
+        ), f"expected USER_CONFIRMED in {records}"
+        user_confirmed = next(
+            r for r in records
+            if r.resolution == PermissionResolution.USER_CONFIRMED
+        )
+        assert user_confirmed.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert user_confirmed.candidate_decision is None
