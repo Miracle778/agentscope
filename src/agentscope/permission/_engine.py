@@ -5,6 +5,7 @@ from typing import Any, List, TYPE_CHECKING
 from ._context import PermissionContext
 from ._rule import PermissionRule
 from ._decision import PermissionDecision, PermissionBehavior
+from ._evaluation import PermissionEvaluation, PermissionResolution
 from ._types import PermissionMode
 from .._utils._common import _execute_async_or_sync_func
 
@@ -81,14 +82,10 @@ class PermissionEngine:
     ) -> PermissionDecision:
         """Check permission for a tool execution request.
 
-        Dispatches to a per-mode private method so each mode's policy
-        is self-contained and readable in isolation:
-
-        - DEFAULT      → :meth:`_check_default`
-        - EXPLORE      → :meth:`_check_explore`
-        - ACCEPT_EDITS → :meth:`_check_accept_edits`
-        - BYPASS       → :meth:`_check_bypass`
-        - DONT_ASK     → :meth:`_check_dont_ask`
+        Returns the final :class:`PermissionDecision` only. Use
+        :meth:`evaluate_permission` when you need the structured
+        evaluation (including any candidate decision suppressed by the
+        active mode).
 
         Args:
             tool (`ToolBase`):
@@ -100,6 +97,35 @@ class PermissionEngine:
         Returns:
             `PermissionDecision`:
                 Decision indicating whether to allow, deny, or ask.
+        """
+        evaluation = await self.evaluate_permission(tool, tool_input)
+        return evaluation.effective_decision
+
+    async def evaluate_permission(
+        self,
+        tool: ToolBase,
+        tool_input: dict[str, Any],
+    ) -> PermissionEvaluation:
+        """Evaluate permission and return a structured result.
+
+        Like :meth:`check_permission` but also exposes any candidate
+        decision that was transformed or suppressed by the active mode
+        (e.g. a BYPASS-silenced safety ASK). Dispatches to a per-mode
+        private method so each mode's policy is self-contained and
+        readable in isolation:
+
+        - DEFAULT      → :meth:`_check_default`
+        - EXPLORE      → :meth:`_check_explore`
+        - ACCEPT_EDITS → :meth:`_check_accept_edits`
+        - BYPASS       → :meth:`_check_bypass`
+        - DONT_ASK     → :meth:`_check_dont_ask`
+
+        Args:
+            tool (`ToolBase`): The tool instance being called.
+            tool_input (`dict[str, Any]`): The tool input data.
+
+        Returns:
+            `PermissionEvaluation`: The structured evaluation result.
         """
         mode = self.context.mode
         if mode == PermissionMode.DEFAULT:
@@ -114,11 +140,35 @@ class PermissionEngine:
             return await self._check_dont_ask(tool, tool_input)
         raise ValueError(f"Unknown permission mode: {mode}")
 
+    def _direct(
+        self,
+        decision: PermissionDecision,
+    ) -> PermissionEvaluation:
+        """Wrap a directly-returned decision (no transformation)."""
+        return PermissionEvaluation(
+            mode=self.context.mode,
+            effective_decision=decision,
+        )
+
+    def _resolved(
+        self,
+        effective: PermissionDecision,
+        candidate: PermissionDecision,
+        resolution: PermissionResolution,
+    ) -> PermissionEvaluation:
+        """Wrap a decision that transformed/suppressed a candidate."""
+        return PermissionEvaluation(
+            mode=self.context.mode,
+            effective_decision=effective,
+            candidate_decision=candidate,
+            resolution=resolution,
+        )
+
     async def _check_default(
         self,
         tool: ToolBase,
         tool_input: dict[str, Any],
-    ) -> PermissionDecision:
+    ) -> PermissionEvaluation:
         """Permission check for :attr:`PermissionMode.DEFAULT`.
 
         Every operation requires explicit permission unless either an
@@ -143,13 +193,14 @@ class PermissionEngine:
                 The tool input data.
 
         Returns:
-            `PermissionDecision`:
-                The final decision.
+            `PermissionEvaluation`:
+                The final evaluation (always ``resolution=DIRECT`` in
+                DEFAULT — no mode transformation occurs).
         """
         # step 1: deny rules — highest priority
         deny = await self._check_deny_rules(tool, tool_input)
         if deny:
-            return deny
+            return self._direct(deny)
 
         # step 2: ask rules
         ask = await self._check_ask_rules(tool, tool_input)
@@ -158,7 +209,7 @@ class PermissionEngine:
                 tool,
                 tool_input,
             )
-            return ask
+            return self._direct(ask)
 
         # step 3: tool's own check_permissions
         tool_decision = await tool.check_permissions(tool_input, self.context)
@@ -167,19 +218,19 @@ class PermissionEngine:
             PermissionBehavior.ALLOW,
             PermissionBehavior.DENY,
         ):
-            return tool_decision
+            return self._direct(tool_decision)
         # step 3b: safety ASK is bypass-immune — allow rules can't override
         if self._is_safety_ask(tool_decision):
             tool_decision.suggested_rules = await self._generate_suggestions(
                 tool,
                 tool_input,
             )
-            return tool_decision
+            return self._direct(tool_decision)
 
         # step 4: allow rules
         allow = await self._check_allow_rules(tool, tool_input)
         if allow:
-            return allow
+            return self._direct(allow)
 
         # step 5: default — ASK the user
         default = PermissionDecision(
@@ -191,7 +242,7 @@ class PermissionEngine:
             tool,
             tool_input,
         )
-        return default
+        return self._direct(default)
 
     async def _check_explore(
         self,

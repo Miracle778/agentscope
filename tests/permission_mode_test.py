@@ -29,6 +29,9 @@ from agentscope.permission import (
     PermissionContext,
     PermissionRule,
     PermissionBehavior,
+    PermissionDecision,
+    PermissionEvaluation,
+    PermissionResolution,
     AdditionalWorkingDirectory,
 )
 from agentscope.tool import (
@@ -893,3 +896,50 @@ class PermissionEngineDontAskModeTest(IsolatedAsyncioTestCase):
             {"command": "rm -rf /"},
         )
         self.assertEqual(decision.behavior, PermissionBehavior.DENY)
+
+
+class PermissionEvaluationDefaultModeTest(IsolatedAsyncioTestCase):
+    """evaluate_permission returns structured evaluations for DEFAULT mode."""
+
+    async def asyncSetUp(self) -> None:
+        self.context = PermissionContext(mode=PermissionMode.DEFAULT)
+        self.engine = PermissionEngine(self.context)
+
+    async def test_deny_rule_is_direct(self) -> None:
+        self.engine.add_rule(
+            PermissionRule(
+                tool_name="Bash",
+                rule_content="rm *",
+                behavior=PermissionBehavior.DENY,
+                source="test",
+            ),
+        )
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm foo"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert evaluation.mode == PermissionMode.DEFAULT
+
+    async def test_safety_ask_is_direct(self) -> None:
+        # rm -rf / triggers bypass-immune safety ASK; in DEFAULT it is
+        # honored (returned as-is, not suppressible by allow rules).
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm -rf /"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ASK
+        assert evaluation.effective_decision.bypass_immune is True
+
+    async def test_read_only_command_is_direct_allow(self) -> None:
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "ls"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
