@@ -405,7 +405,7 @@ class PermissionEngine:
         self,
         tool: ToolBase,
         tool_input: dict[str, Any],
-    ) -> PermissionDecision:
+    ) -> PermissionEvaluation:
         """Permission check for :attr:`PermissionMode.BYPASS`.
 
         BYPASS is the "fully trusted" mode: the user has explicitly
@@ -433,6 +433,12 @@ class PermissionEngine:
         4. Allow rules → ALLOW
         5. Fallback → ALLOW (BYPASS)
 
+        When a tool-emitted ASK is suppressed (steps 4–5), the original
+        ASK is preserved as :attr:`PermissionEvaluation.candidate_decision`
+        with :attr:`PermissionResolution.BYPASS_ASK_SUPPRESSED`, so an
+        observer can audit the suppression even though the final ALLOW
+        no longer carries ``bypass_immune``.
+
         Args:
             tool (`ToolBase`):
                 The tool instance being called.
@@ -440,13 +446,14 @@ class PermissionEngine:
                 The tool input data.
 
         Returns:
-            `PermissionDecision`:
-                The final decision.
+            `PermissionEvaluation`:
+                The final evaluation. ``resolution=BYPASS_ASK_SUPPRESSED``
+                when a tool ASK was silenced into ALLOW.
         """
         # step 1: deny rules
         deny = await self._check_deny_rules(tool, tool_input)
         if deny:
-            return deny
+            return self._direct(deny)
 
         # step 2: ask rules (honor explicit user intent to be prompted)
         ask = await self._check_ask_rules(tool, tool_input)
@@ -455,7 +462,7 @@ class PermissionEngine:
                 tool,
                 tool_input,
             )
-            return ask
+            return self._direct(ask)
 
         # step 3: tool's own check_permissions — ALLOW / DENY returned;
         # any ASK (including bypass-immune safety ASK) is intentionally
@@ -465,19 +472,35 @@ class PermissionEngine:
             PermissionBehavior.ALLOW,
             PermissionBehavior.DENY,
         ):
-            return tool_decision
+            return self._direct(tool_decision)
 
-        # step 4: allow rules
+        # step 4: allow rules. A tool-emitted ASK reaching here is being
+        # suppressed — record it as the candidate.
         allow = await self._check_allow_rules(tool, tool_input)
         if allow:
-            return allow
+            if tool_decision.behavior == PermissionBehavior.ASK:
+                return self._resolved(
+                    allow,
+                    tool_decision,
+                    PermissionResolution.BYPASS_ASK_SUPPRESSED,
+                )
+            return self._direct(allow)
 
-        # step 5: bypass fallback — ALLOW everything else
-        return PermissionDecision(
+        # step 5: bypass fallback — ALLOW everything else. Same candidate
+        # preservation as step 4 when a tool ASK was suppressed.
+        fallback = PermissionDecision(
             behavior=PermissionBehavior.ALLOW,
             message=f"Permission granted for {tool.name} (bypass mode)",
             decision_reason="Bypass mode allows all operations",
         )
+        if tool_decision.behavior == PermissionBehavior.ASK:
+            return self._resolved(
+                fallback,
+                tool_decision,
+                PermissionResolution.BYPASS_ASK_SUPPRESSED,
+            )
+        return self._direct(fallback)
+
 
     async def _check_dont_ask(
         self,

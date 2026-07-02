@@ -943,3 +943,70 @@ class PermissionEvaluationDefaultModeTest(IsolatedAsyncioTestCase):
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
         assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+
+
+class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
+    """evaluate_permission exposes ASKs suppressed by BYPASS."""
+
+    async def asyncSetUp(self) -> None:
+        self.context = PermissionContext(mode=PermissionMode.BYPASS)
+        self.engine = PermissionEngine(self.context)
+
+    async def test_tool_allow_is_direct(self) -> None:
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "ls"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+
+    async def test_safety_ask_suppressed_to_allow(self) -> None:
+        # rm -rf / -> bypass-immune safety ASK, suppressed to ALLOW.
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm -rf /"},
+        )
+        assert evaluation.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert evaluation.candidate_decision is not None
+        assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
+        assert evaluation.candidate_decision.bypass_immune is True
+
+    async def test_allow_rule_after_ask_is_suppressed(self) -> None:
+        # An allow rule that converts a suppressed ASK into ALLOW still
+        # records the suppressed ASK as the candidate.
+        self.engine.add_rule(
+            PermissionRule(
+                tool_name="Bash",
+                rule_content="rm *",
+                behavior=PermissionBehavior.ALLOW,
+                source="test",
+            ),
+        )
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm -rf /"},
+        )
+        assert evaluation.resolution == PermissionResolution.BYPASS_ASK_SUPPRESSED
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+        assert evaluation.candidate_decision is not None
+        assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
+        assert evaluation.candidate_decision.bypass_immune is True
+
+    async def test_deny_rule_is_direct(self) -> None:
+        self.engine.add_rule(
+            PermissionRule(
+                tool_name="Bash",
+                rule_content="rm *",
+                behavior=PermissionBehavior.DENY,
+                source="test",
+            ),
+        )
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm foo"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
