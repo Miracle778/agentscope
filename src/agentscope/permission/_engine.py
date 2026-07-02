@@ -506,7 +506,7 @@ class PermissionEngine:
         self,
         tool: ToolBase,
         tool_input: dict[str, Any],
-    ) -> PermissionDecision:
+    ) -> PermissionEvaluation:
         """Permission check for :attr:`PermissionMode.DONT_ASK`.
 
         Used when no user is available to answer prompts (scheduled
@@ -524,6 +524,10 @@ class PermissionEngine:
         4. Allow rules → ALLOW
         5. Default → DENY (user not available to answer)
 
+        When an ASK is converted to DENY (steps 2 and 3b), the original
+        ASK is preserved as :attr:`PermissionEvaluation.candidate_decision`
+        with :attr:`PermissionResolution.ASK_CONVERTED_TO_DENY`.
+
         Args:
             tool (`ToolBase`):
                 The tool instance being called.
@@ -531,13 +535,13 @@ class PermissionEngine:
                 The tool input data.
 
         Returns:
-            `PermissionDecision`:
-                The final decision (never ASK).
+            `PermissionEvaluation`:
+                The final evaluation (effective decision never ASK).
         """
         # step 1: deny rules
         deny = await self._check_deny_rules(tool, tool_input)
         if deny:
-            return deny
+            return self._direct(deny)
 
         # step 2: ask rules — converted to DENY (no user available)
         ask = await self._check_ask_rules(tool, tool_input)
@@ -546,7 +550,11 @@ class PermissionEngine:
                 tool,
                 tool_input,
             )
-            return self._convert_ask_to_deny(tool, ask)
+            return self._resolved(
+                self._convert_ask_to_deny(tool, ask),
+                ask,
+                PermissionResolution.ASK_CONVERTED_TO_DENY,
+            )
 
         # step 3: tool's own check_permissions
         tool_decision = await tool.check_permissions(tool_input, self.context)
@@ -555,29 +563,35 @@ class PermissionEngine:
             PermissionBehavior.ALLOW,
             PermissionBehavior.DENY,
         ):
-            return tool_decision
+            return self._direct(tool_decision)
         # step 3b: safety ASK converted to DENY (no user available)
         if self._is_safety_ask(tool_decision):
             tool_decision.suggested_rules = await self._generate_suggestions(
                 tool,
                 tool_input,
             )
-            return self._convert_ask_to_deny(tool, tool_decision)
+            return self._resolved(
+                self._convert_ask_to_deny(tool, tool_decision),
+                tool_decision,
+                PermissionResolution.ASK_CONVERTED_TO_DENY,
+            )
 
         # step 4: allow rules
         allow = await self._check_allow_rules(tool, tool_input)
         if allow:
-            return allow
+            return self._direct(allow)
 
         # step 5: default — DENY (no user available to confirm)
-        return PermissionDecision(
-            behavior=PermissionBehavior.DENY,
-            message=(
-                f"Permission denied for {tool.name} "
-                f"(dont_ask mode - user not available)"
+        return self._direct(
+            PermissionDecision(
+                behavior=PermissionBehavior.DENY,
+                message=(
+                    f"Permission denied for {tool.name} "
+                    f"(dont_ask mode - user not available)"
+                ),
+                decision_reason="User is not available to answer permission "
+                "prompts",
             ),
-            decision_reason="User is not available to answer permission "
-            "prompts",
         )
 
     @staticmethod

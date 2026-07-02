@@ -1010,3 +1010,63 @@ class PermissionEvaluationBypassModeTest(IsolatedAsyncioTestCase):
         assert evaluation.resolution == PermissionResolution.DIRECT
         assert evaluation.candidate_decision is None
         assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+
+
+class PermissionEvaluationDontAskModeTest(IsolatedAsyncioTestCase):
+    """evaluate_permission exposes ASKs converted to DENY by DONT_ASK."""
+
+    async def asyncSetUp(self) -> None:
+        self.context = PermissionContext(mode=PermissionMode.DONT_ASK)
+        self.engine = PermissionEngine(self.context)
+
+    async def test_safety_ask_converted_to_deny(self) -> None:
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm -rf /"},
+        )
+        assert evaluation.resolution == PermissionResolution.ASK_CONVERTED_TO_DENY
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert evaluation.candidate_decision is not None
+        assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
+        assert evaluation.candidate_decision.bypass_immune is True
+
+    async def test_ask_rule_converted_to_deny(self) -> None:
+        self.engine.add_rule(
+            PermissionRule(
+                tool_name="Bash",
+                rule_content="rm *",
+                behavior=PermissionBehavior.ASK,
+                source="test",
+            ),
+        )
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "rm foo"},
+        )
+        assert evaluation.resolution == PermissionResolution.ASK_CONVERTED_TO_DENY
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
+        assert evaluation.candidate_decision is not None
+        assert evaluation.candidate_decision.behavior == PermissionBehavior.ASK
+
+    async def test_read_only_is_direct_allow(self) -> None:
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "ls"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.ALLOW
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash tool is not supported on Windows",
+    )
+    async def test_default_is_direct_deny(self) -> None:
+        # Non-read-only, no rule, no safety ASK -> default DENY (no user).
+        evaluation = await self.engine.evaluate_permission(
+            Bash(),
+            {"command": "npm install"},
+        )
+        assert evaluation.resolution == PermissionResolution.DIRECT
+        assert evaluation.candidate_decision is None
+        assert evaluation.effective_decision.behavior == PermissionBehavior.DENY
